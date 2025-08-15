@@ -1,0 +1,691 @@
+---
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: false   # <- Desactiva l'índex automàtic
+    number_sections: true
+    toc_depth: 3
+params:
+  seed_train: 123
+  seed_classifier: 12345
+lang: ca
+bibliography: referencies.bib
+---
+
+
+
+\newpage
+\thispagestyle{empty}
+\begin{titlepage}
+\centering
+\vspace*{2cm}
+
+{\Huge\bfseries Anàlisi de factors de risc en diabetis amb models de classificació\par}
+\vspace{2cm}
+
+{\Large Jaume Inglada, Mercè Mateu, Cristina Tuá, Melissa Vargas\par}
+\vfill
+
+{\Large \today \par}
+
+\vspace{1.5cm}
+
+%\includegraphics[width=0.3\textwidth]{logotip.png}
+
+\vspace{1cm}
+\Large Universitat de Barcelona - Universitat Politècnica de Catalunya \\
+Grau en Estadística \\
+Assignatura: Estadística per a les Biociències
+
+\end{titlepage}
+\newpage
+
+\tableofcontents
+
+
+\newpage
+# Introducció
+
+En l’actual era de la informació, l’anàlisi de dades s’ha consolidat com una eina essencial per a la comprensió de fenòmens complexos en les Biociències, així com en nombrosos altres àmbits del coneixement. Entre les diverses aplicacions biomèdiques, la detecció precoç de malalties constitueix un dels camps d'estudi més rellevants.
+
+En aquest context, l’estudi actual pretén desenvolupar un model predictiu que determini si un pacient pateix diabetis, utilitzant un conjunt de dades clíniques i demogràfiques. Mitjançant tècniques d’aprenentatge automàtic, es busquen models de classificació precisos per identificar la presència d’aquesta malaltia en individus.
+
+Per a la realització de l’anàlisi s’ha utilitzat [conjunt de dades Pima Indians Diabetes](https://archive.ics.uci.edu/dataset/34/diabetes)
+proporcionat pel National Institute of Diabetes and Digestive and Kidney Diseases (Estats Units).
+Aquesta base de dades conté dades de pacients de sexe biològic femení majors de 21 anys, amb ascendència "Pima", un grup ètnic indígena nord-americà originari de l’estat d’Arizona.
+
+Els resultats obtinguts podrien contribuir a millorar estratègies de diagnòstic precoç en poblacions amb risc elevat, mostrant el potencial de les aproximacions basades en dades en salut pública.
+
+\newpage
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,
+  message = FALSE)
+```
+
+```{r, echo=FALSE}
+library(treeheatr)
+library(caret)
+library(class)
+library(e1071)
+library(pROC)   
+library(ggplot2)
+library(kernlab)
+library(cepp)
+library(ROCR)
+library(ROCR)
+library(knitr)
+```
+
+# Materials i Mètodes
+
+## Naturalesa de les dades
+
+El conjunt de dades analitzat conté 768 observacions i 9 variables clíniques i demogràfiques numèriques, amb les següents característiques:
+
+    - Pregnancies: Nombre d'embarassos (interval: 0-17)
+
+    - Glucose: Concentració de glucosa en plasma en prova de tolerància (0-199 mg/dL)
+
+    - BloodPressure: Pressió arterial diastòlica en mmHg (0-122)
+
+    - SkinThickness: Gruix del plec cutani tricipital en mm (0-99)
+
+    - Insulin: Concentració d'insulina en sèrum a 2 hores (0-846 µU/mL)
+
+    - BMI: Índex de massa corporal en kg/m² (0-67.1)
+
+    - DiabetesPedigreeFunction: Probabilitat genètica de diabetis basada en l'herència familiar (0.08-2.42)
+
+    - Age: Edat del pacient en anys (21-81)
+
+    - Outcome: Variable dicotòmica (1: diabètic, 0: no diabètic)
+
+```{r, echo=FALSE}
+data(diabetes, package = "treeheatr")
+View(diabetes)
+diabetes$Outcome <- factor(diabetes$Outcome,
+                           levels = c(0, 1),
+                           labels = c("No", "Si"))
+```
+
+Per realitzar una primera aproximació a l'estructura i contingut del conjunt de
+dades, es mostren els sis primers registres de la base de dades, que inclouen les
+nou variables d'estudi:
+
+```{r}
+head(diabetes)
+
+```
+
+Complementàriament, es presenta la distribució de freqüències de les observacions segons la variable resposta. Aquest desequilibri és rellevant per a la selecció de mètriques d'avaluació del model (precisió, sensibilitat, F1-score) i la interpretació dels valors predictius del model.
+
+```{r frag2.1,echo=FALSE}
+kable(as.data.frame(table(diabetes$Outcome)),
+      col.names= c("clase", "Frecuencia"),
+      align= "cc")
+
+```
+
+Aquesta distribució mostra que aproximadament un terç del grup d'estudi (34,9%) té diagnòstic positiu de diabetis, mentre que els dos terços restants (65,1%) constitueixen el grup control. Com assenyalen estudis previs @talebi2024predicting, aquest desequilibri és comú.
+En la següent taula es troba la mitjana i desviació estàndard de totes les variables numèriques agrupades per l'estat diabètic (Outcome). Els resultats mostren diferències clau entre grups:
+
+- Els pacients diabètics (Outcome = "Si") presenten valors mitjans més alts en variables com Glucose i BMI, coherent amb la literatura mèdica.
+- Les desviacions estàndard més altes en el grup diabètic suggereixen major variabilitat biològica.
+
+```{r, echo=FALSE}
+library(dplyr)
+
+diabetes %>%
+  group_by(Outcome) %>%
+  summarise(
+    across(
+      where(is.numeric), 
+      list(
+        mean = mean,    
+        sd = sd           
+      ), 
+      .names = "{.col}_{.fn}"
+    )
+  )
+```
+
+Es compara amb el resum descriptiu general de les vuit variables explicatives (sense agrupar per Outcome) per veure la distribució global:
+
+```{r, echo=FALSE}
+library(dplyr)
+summary(diabetes %>% select(where(is.numeric)))
+```
+
+La visualització mitjançant el següent gràfic revela diferències significatives en els nivells de glucosa entre els grups amb diabetis i sense, corroborant els resultats numèrics obtinguts:
+
+Grup diabètic (Outcome=1):
+  - Presenta una mediana de glucosa significativament superior (≈140-150          mg/dL).
+  - Major dispersió (amplada del boxplot) i alguns valors atípics.
+Grup no diabètic (Outcome=0):
+  - Mediana al voltant de 100-110 mg/dL (dins dels marges considerats             normals).
+  - Menor variabilitat i més valors atípics que el grup diabètic.
+
+```{r, echo=FALSE}
+boxplot(Glucose ~ Outcome, data = diabetes,
+        col = c("lightblue", "salmon"),
+        main = "Distribució de Glucosa segons Outcome",
+        xlab = "Outcome",
+        ylab = "Glucosa",
+        names = c("No Diabetes", "Diabetes"))
+
+```
+
+El següent gràfic de densitat revela que el grup diabètic presenta una distribució d'edats més esbiaixades cap a valors superiors amb dos pics (≈23 i ≈42 anys), mentre que el grup control mostra una distribució més jove (pic ≈25 anys). Aquest patró coincideix amb l'evidència epidemiològica que associa la diabetis amb l'envelliment, com demostra @bierhaus1998ages.
+
+
+```{r, echo=FALSE}
+library(ggplot2)
+
+ggplot(diabetes, aes(x = Age, fill = factor(Outcome))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("lightblue", "salmon"),
+                    labels = c("No Diabetis", "Diabetis"),
+                    name = "Diagnòstic") +
+  labs(title = "Densitat d'Edat per Outcome",
+       x = "Edat", y = "Densitat")
+```
+
+A continuació el conjunt de box plots produït ofereix una comparació sistemàtica de a distribució de totes les variables numèriques en funció de l'Outcome (diabetis vs. no diabetis). Aquesta visualització és especialment útil per fer algunes observacions claus; Glucosa i BMI mostren una clara separació entre les medianes dels dos grups, corroborant la seva rellevància clínica en el diagnòstic de diabetis. Per l'altra banda, Insulina presenta una dispersió major en el grup diabètic, amb outliers evidents, possiblement indicant casos de resistència a la insulina.
+
+```{r, echo=FALSE}
+library(tidyr)
+
+diabetes_long <- diabetes %>%
+  pivot_longer(cols = -Outcome, names_to = "variable", values_to = "valor")
+
+ggplot(diabetes_long, aes(x = factor(Outcome), y = valor, fill = factor(Outcome))) +
+  geom_boxplot() +
+  facet_wrap(~ variable, scales = "free") +
+  scale_fill_manual(values = c("lightblue", "salmon"),
+                    labels = c("No Diabetes", "Diabetes")) +
+  labs(x = "Outcome", y = "Valor", title = "Boxplots per Variable y Outcome") +
+  theme_minimal()
+```
+\newpage
+# Mètodes utilitzats
+
+
+## Algorismes de classificació utilitzats
+
+
+S’utilitzaran dos mètodes de classificació supervisada: k-Nearest Neighbours (k-NN) i Support Vector Machines (SVM), amb validació creuada per a l'optimització dels hiperparàmetres.
+
+**k-Nearest Neighbours (k-NN)** 
+
+El mètode k-NN és un algorisme de classificació supervisada no paramètric que assigna a una nova observació la classe majoritària dels seus *k* veïns més propers en l'espai de característiques. La distància entre observacions es calcula mitjançant la mètrica euclidiana:
+
+$$
+d(\mathbf{x}_i, \mathbf{x}_j) = \sqrt{\sum_{k=1}^{n} (x_{ik} - x_{jk})^2}
+$$
+
+La selecció del paràmetre *k* és crítica: valors petits poden conduir a sobreajustament (overfitting), mentre que valors grans poden simplificar excessivament el model.
+En aquest estudi, s'exploren els valors *k* = {1, 11, 21, 31} mitjançant validació creuada de 3 particions (*3-fold CV*).
+
+**Support Vector Machines (SVM)**
+
+Els SVM busquen un hiperplà òptim que maximitzi el marge entre classes en un espai transformat. S'han considerat dos tipus de funcions de nucli (kernels):
+
+Kernel lineal:
+
+$$
+K(\mathbf{x}_i, \mathbf{x}_j) = \mathbf{x}_i \cdot \mathbf{x}_j
+$$
+Adequat per a problemes linealment separables.
+
+Kernel radial (RBF):
+
+$$
+K(\mathbf{x}_i, \mathbf{x}_j) = \exp\left(-\gamma \, \lVert \mathbf{x}_i - \mathbf{x}_j \rVert^2 \right)
+$$
+
+Flexible per a relacions no lineals, amb el paràmetre $\gamma$ controlant la
+flexibilitat del model.
+
+El paràmetre de regularització C s'ha optimitzat per a ambdós kernels, amb valors explorats en l'interval $2^{-10}$ a $2^{15}$.
+
+**Protocol de l'estudi**
+
+Per a l'avaluació dels models, es dividirà el conjunt de dades en dos subconjunts:
+  - Conjunt d'entrenament (train): 70% de les dades.
+  - Conjunt de prova (test): 30% de les dades.
+
+Aquesta partició es realitzarà de manera aleatòria fent servir la llavor 123,
+mantenint la proporció de les classes (Outcome) per evitar biaixos.
+
+## Obtenció de les mostres de train i test.
+
+```{r, echo=FALSE}
+set.seed(params$seed_train)
+index <- createDataPartition(diabetes$Outcome, p = 2/3, list = FALSE)
+train <- diabetes[index, ]
+test <- diabetes[-index, ]
+
+xtrain <- train[, -ncol(train)]
+ytrain <- as.factor(train$Outcome)
+
+xtest <- test[, -ncol(test)]
+ytest <- as.factor(test$Outcome)
+
+table(ytrain)
+table(ytest)
+```
+\newpage
+# Avaluació dels models
+
+**Model k-NN (amb caret i 3-fold CV)**
+
+Els models k-Nearest Neighbours (k-NN) s'han avaluat utilitzant el paquet caret de R, amb validació creuada de 3 particions (3-fold CV) per optimitzar el paràmetre *k* (nombre de veïns). S'han explorat els valors k = {1, 11, 21, 31} per determinar quin ofereix el millor rendiment en la classificació de pacients diabètics.
+
+```{r, echo=FALSE}
+knn_metrics <- data.frame(
+  k = c(1, 11, 21, 31),
+  Accuracy = c(0.6824, 0.7608, 0.7490, 0.7294),
+  Sensitivity = c(0.7771, 0.8855, 0.8735, 0.8855),
+  Specificity = c(0.5056, 0.5281, 0.5169, 0.4382),
+  `Pos Pred Value` = c(0.7457, 0.7778, 0.7713, 0.7462),
+  `Neg Pred Value` = c(0.5488, 0.7121, 0.6866, 0.6724),
+  Kappa = c(0.288, 0.440, 0.414, 0.352)
+)
+
+knitr::kable(
+  knn_metrics,
+  caption = "Comparativa de models k-NN amb diferents valors de k",
+  col.names = c("k", "Exactitud", "Sensibilitat", "Especificitat", 
+                "Valor Predictiu Positiu", "Valor Predictiu Negatiu", 
+                "Kappa"),
+  digits = 3,
+  align = "c"
+) %>%
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  )
+```
+
+**k=1**
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+knn_model_k1 <- knn(xtrain, xtest, ytrain, k = 1)
+confusionMatrix(knn_model_k1, as.factor(ytest))
+```
+
+Segons la matriu de confusió, el model amb k=1 presenta una precisió (accuracy) relativament baixa (68.2%) i una concordança feble (kappa=0.288). Tot i que mostra una bona sensibilitat (77.7%) per identificar casos negatius, la seva especificitat (50.6%) és insuficient per detectar casos positius. Això, juntament amb un valor predictiu negatiu baix (54.9%), indica que el model està sobre ajustat i és massa sensible a variacions petites en les dades.
+
+
+**k=11**
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+knn_model_k11 <- knn(xtrain, xtest, ytrain, k = 11)
+confusionMatrix(knn_model_k11, as.factor(ytest))
+```
+
+El model amb k=11 millora significativament, assolint una precisió del 76.1% (p<0.001) i una concordança moderada (kappa=0.44). La sensibilitat és excel·lent (88.6%), però l'especificitat continua sent limitada (52.8%). Els valors predictius milloren (77.8% positiu, 71.2% negatiu), tot i mostrar un lleuger desequilibri en els errors (més falsos negatius).
+
+**k=21**
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+knn_model_k21 <- knn(xtrain, xtest, ytrain, k = 21)
+confusionMatrix(knn_model_k21, as.factor(ytest))
+```
+
+Amb k=21 s'obté un equilibri òptim: precisió del 74.9%, concordança acceptable (kappa=0.414) i sensibilitat consistent (87.3%). Encara que l'especificitat (51.7%) roman baixa, els valors predictius (77.1% positiu, 68.7% negatiu) indiquen un bon rendiment global. Aquest model mostra la millor estabilitat entre tots els avaluats.
+
+**k=31**
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+knn_model_k31 <- knn(xtrain, xtest, ytrain, k = 31)
+confusionMatrix(knn_model_k31, as.factor(ytest))
+```
+
+El model amb k=31 presenta una disminució en rendiment: precisió del 72.9% i concordança feble-moderada (kappa=0.352). Tot i mantenir alta sensibilitat (88.6%), l'especificitat cau fins al 43.8%, el pitjor valor de tots. Això suggereix que un k excessivament alt simplifica massa el model, perdent capacitat predictiva.
+
+**Model SVM**
+
+```{r, echo=FALSE}
+library(knitr)
+library(kableExtra)
+
+svm_metrics <- data.frame(
+  Modelo = c("SVM Lineal", "SVM RBF"),
+  Exactitud = c(0.7647, 0.7529),
+  Sensibilidad = c(0.8735, 0.8795),
+  Especificidad = c(0.5618, 0.5169),
+  `Valor Predictivo Positivo` = c(0.7880, 0.7725),
+  `Valor Predictivo Negativo` = c(0.7042, 0.6970),
+  Kappa = c(0.4567, 0.4216)
+)
+
+svm_metrics %>%
+  kable(
+    caption = "Comparativa dels models SVM: Kernel Lineal vs. Radial (RBF)",
+    col.names = c("Model", "Exactitud", "Sensibilitat", "Especificitat", 
+                  "VPP", "VPN", "Kappa"),
+    digits = 3,
+    align = "c"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    font_size = 12
+  ) %>%
+  row_spec(1, bold = TRUE, background = "#f7f7f7") %>%  # Destacar SVM Lineal
+  add_header_above(c(" " = 1, "Métriques de Rendiment" = 6))
+```
+
+
+Kernel Lineal:
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+ mydata<-data.frame(ytrain,xtrain)
+ mydata_lineal<- ksvm(ytrain ~ ., data = mydata,
+ kernel = "vanilladot")
+  mydata_lineal_predict<- predict(mydata_lineal, xtest)
+ (conf_mat.lineal <- confusionMatrix(mydata_lineal_predict,as.factor(ytest)))
+```
+
+El model mostra una precisió global del 76,5%, amb una bona **sensibilitat (87,3%)** per detectar casos negatius (no diabètics), però una **especificitat moderada (56,2%)** per a casos positius. El valor Kappa (0,457) indica una concordança moderada, mentre que el test de McNemar (p=0,028) revela un desequilibri significatiu en els errors de classificació. Els valors predictius (**78,8% positiu, 70,4% negatiu**) suggereixen que el model és més fiable quan prediu "No diabètic". L'**exactitud equilibrada (71,8%)** reflecteix aquesta diferència en el rendiment entre classes.
+
+Kernel Radial (RBF):
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(params$seed_classifier)
+ mydata_rbf<- ksvm(ytrain ~ ., data = mydata,
+ kernel = "rbf")
+ mydata_rbf_predict<- predict(mydata_rbf, xtest)
+ (conf_mat.rbf <- confusionMatrix(mydata_rbf_predict,as.factor(ytest)))
+```
+
+El model presenta una precisió global del 74,9%, amb una alta sensibilitat (87,9%) per identificar casos negatius ("No diabètic"), però una especificitat limitada (50,6%) per a casos positius. La concordança moderada (Kappa=0,411) i el desequilibri en els errors (test de McNemar, p=0,004) indiquen que el model tendeix a classificar incorrectament més casos diabètics. Els valors predictius (76,8% positiu, 69,2% negatiu) mostren una fiabilitat acceptable, però inferior al kernel lineal. L'exactitud equilibrada (69,3%) reflecteix la diferència de rendiment entre classes, similar al model lineal però amb una especificitat lleugerament inferior.
+
+## Optimització dels hiperparàmetres mitjançant tècniques de validació sistemàtica 
+
+Per determinar el millor model per a cada algorisme, s'han optimitzat els hiperparàmetres principals (k per k-NN, C per a SVM lineal i C amb $\gamma$ per a SVM radial) mitjançant una cerca exhaustiva en graella (grid search), avaluant cada combinació amb validació creuada de 3 particions (3-fold CV).
+
+**k-NN optimitzat**
+
+```{r, echo=FALSE}
+ks <-c(1, 11, 21, 31)
+set.seed(params$seed_classifier)
+mydata<-data.frame(ytrain,xtrain)
+ctrl <- trainControl(method="cv", number = 3)
+kvalues <- expand.grid(k= ks)
+knnFit <- train(ytrain ~ ., data = mydata, method = "knn", trControl = ctrl, tuneGrid = kvalues)
+knnFit
+```
+```{r, echo=FALSE}
+plot(knnFit, main="kNN tunning")
+```
+
+
+El gràfic mostra l'accuracy mitjà obtingut mitjançant validació creuada (3 fold) per diferents valors de *k* (veïns). Es destaca que k = 21 assoleix la màxima precisió (~75%), seguint per k = 11 i k = 31. 
+
+Els valors extrems (k = 1 i k = 31) mostren pitjor rendiment, per una banda, *k = 1*: Propens a sobreajustament (overfitting), amb alta variabilitat. Per l'altra, *k = 31*: Excessivament simple, perd patrons rellevants.
+
+El model és robust en un rang mitjà de *k* (11 a 21), amb k = 21 seleccionat com a òptim.
+
+**Utilització del millor model k-NN**
+
+```{r, echo=FALSE, include=FALSE}
+knnPredict <- predict(knnFit$finalModel,xtest,type="class")
+confusionMatrix(as.factor(ytest),knnPredict)
+```
+
+El model k-NN optimitzat (*k*=21) assolí una precisió global del 74.9%, classificant correctament 3 de cada 4 pacients. Presentà una bona sensibilitat (77.1%) per identificar casos no diabètics (valor predictiu positiu: 87.3%), però limitacions en especificitat (68.7%) per detectar diabètics (valor predictiu negatiu: 51.7%), cosa que el fa útil per descartar la malaltia però poc fiable per confirmar-la. El test de McNemar (*p*=0.009) revelà un desequilibri en els errors (més falsos negatius), probablement degut al desequilibri de classes (73.7% "No" vs 26.3% "Si") o a variables poc informatives per a la classe minoritària. Aquesta configuració seria adequada per a screening inicial, però requereix ajustos per millorar la detecció de casos positius.
+Comparant amb el model inicial k-NN l'optimització augmenta l'especificitat de ~50% a 68.7%.
+
+**SVM**
+
+**Kernel Lineal:**
+
+El procés d'optimització del paràmetre C (paràmetre de regularització) en el model SVM lineal ha avaluat valors de C en escala logarítmica (des de 2⁻¹⁰ fins a 2¹⁵). El gràfic d'error de classificació mostra una corba en forma de "L" típica, on l'error disminueix ràpidament a mesura que augmenta C fins a assolir un punt òptim.
+
+```{r, echo=FALSE}
+ clist <- 2^seq(-10,15)
+ errlin <- numeric(length(clist))
+ for (i in seq(length(clist))) {
+ svp <- ksvm(ytrain ~ ., data = mydata, type="C-svc", kernel='vanilladot',
+ C=clist[i], cross=3)
+ errlin[i] <- cross(svp)
+ }
+  plot(clist,errlin,type='l',log="x",ylim=c(0,1),xlab="C",ylab="Error rate")
+ grid()
+
+```
+
+```{r, echo=FALSE}
+err_clas_min<-min(errlin)
+```
+Error mínim de classificació: `r err_clas_min` (21.64%), es considera bastant bo per a problemes mèdics @daemen2012improved.
+
+```{r, echo=FALSE}
+c_min<-clist[which.min(errlin)]
+```
+
+Que correspon al valor òptim de C igual a `r c_min`.
+
+```{r, echo=FALSE, include=FALSE}
+xtrain_mat <- as.matrix(xtrain)  
+ytrain_fac <- as.factor(ytrain)
+xtest_mat <- as.matrix(xtest)
+ytest_fac <- as.factor(ytest)
+svp1<-ksvm(xtrain_mat,ytrain_fac,type="C-svc",kernel="vanilladot",C=c_min,prob.model=T)
+ypred<-predict(svp1,xtest_mat)
+confusionMatrix(as.factor(ypred), ytest_fac)
+```
+
+El model SVM amb nucli lineal (vanilladot) i paràmetre de regularització C=8192 (determinat prèviament com a òptim) mostra els següents resultats i anàlisi d'errors:
+
+- Distribució: 37 falsos negatius (diabètics classificats com a no diabètics) vs. 23 falsos positius (p=0.093, desequilibri no significatiu).
+- Prevalença: 65.1% de casos negatius (No diabètic) en la mostra.
+
+El model és especialment útil per descartar la diabetis (alta sensibilitat) i la capacitat per confirmar la diabetis és limitada (especificitat moderada). Per l'altra banda, la raó òptima entre precisió i capacitat de generalització (C=8192) suggereix que les classes estan relativament ben separades linealment.
+
+**Kernel gaussià:**
+
+L'anàlisi d'optimització dels hiperparàmetres C (paràmetre de regularització) i σ (amplada del kernel) mostra que la combinació òptima per minimitzar l'error de classificació (23.2%) s'obté amb C = 0.5 i σ = 0.25. El gràfic d'error revela que valors baixos de C i σ generen models més simples però, amb menor sobreajustament, mentre que valors alts poden produir sobreajustament (error creixent). En el conjunt de prova, el model optimitzat assolí una precisió del 73.3%, amb una alta sensibilitat (86.1%) per detectar casos no diabètics, però una especificitat limitada (49.4%) per a casos diabètics. Aquest desequilibri (test de McNemar significatiu, *p*=0.011) suggereix que el model tendeix a classificar incorrectament més casos diabètics com a no diabètics. Tot i això, indicant que el kernel radial captura patrons no lineals rellevants, encara que amb menys eficàcia que el kernel lineal en aquest cas concret.
+
+```{r, echo=FALSE}
+ nc <-length(clist)
+ sigmalist<-2^seq(-2,2)
+ nsigma<-length(sigmalist)
+ err<-matrix(0, nrow=nc, ncol=nsigma)
+ 
+ for(i in seq(nc)){
+   C<-clist[i]
+  cat('C=',C)
+ for(j in seq(nsigma)){
+  cat('.')
+  svp<-ksvm(ytrain~.,data=mydata,
+    type="C-svc",kernel='rbfdot',
+    kpar=list(sigma=sigmalist[j]),C=C, cross=3)
+ err[i,j] <-cross(svp)
+ }
+ cat('\n')
+ }
+library(lattice)
+ dimnames(err)<-list(C=clist,sigma=sigmalist)
+ levelplot(err,scales=list(x=list(rot=90)),xlab="C",ylab=expression(sigma),main="Error rate")
+```
+
+```{r, echo=FALSE}
+err_clas_min<-min(err)
+```
+
+Donats aquests resultats, es destaca que el mínim error de classificació obtingut és `r err_clas_min`.
+
+```{r, echo=FALSE}
+min_pos <- which(err == err_clas_min, arr.ind = TRUE)
+c_min <- clist[min_pos[1]]
+sigma_min <- sigmalist[min_pos[2]]
+```
+
+Obtenint els valors òptims de C i sigma: `r c_min` i `r sigma_min` respectivament.
+
+
+```{r, echo=FALSE, include=FALSE}
+xtrain_mat <- as.matrix(xtrain)  
+ytrain_fac <- as.factor(ytrain)
+xtest_mat <- as.matrix(xtest)
+ytest_fac <- as.factor(ytest)
+
+svp_gauss <- ksvm(xtrain_mat, ytrain_fac,
+                  type = "C-svc",
+                  kernel = "rbfdot",
+                  kpar = list(sigma = sigma_min),
+                  C = c_min,
+                  prob.model = TRUE)
+ypred_gauss <- predict(svp_gauss, xtest_mat)
+confusionMatrix(as.factor(ypred_gauss), ytest_fac)
+
+```
+
+La taula següent mostra la comparativa de rendiment entre els tres models de classificació amb els seus hiperparàmetres optimitzats. S’observa que el model SVM Lineal presenta els millors resultats globals, destacant amb la màxima exactitud (76,47%) i el valor més alt d’AUC (0,8384), indicant una gran capacitat per discriminar correctament entre les dues classes.
+
+Tot i que el model SVM Gaussià presenta una sensibilitat molt similar (86,14% vs. 86,75%) i una AUC molt correcte(0,8003), la seva especificitat és molt baixa (49,44%) cosa que el fa menys fiable en la detecció de casos diabètics. Per la seva banda, el k-NN (amb k = 21) manté un bon equilibri entre sensibilitat i especificitat, però amb un rendiment general inferior (AUC = 0,6573).
+
+Això suggereix que, en aquest context, el SVM Lineal és el model més robust i equilibrat, oferint una bona capacitat predictiva tant per detectar com per descartar casos de diabetis.
+
+```{r, echo=FALSE}
+library(knitr)
+library(kableExtra)
+
+optim_metrics <- data.frame(
+  Modelo = c("k-NN (k=21)", "SVM Lineal", "SVM Gaussià"),
+  Exactitud = c(0.7490, 0.7647, 0.7333),
+  Sensibilidad = c(0.7713, 0.8675, 0.8614),
+  Especificidad = c(0.6866, 0.5730, 0.4944),
+  VPP = c(0.8735, 0.7912, 0.7606),
+  VPN = c(0.5169, 0.6986, 0.6567),
+  Kappa = c(0.4141, 0.4597, 0.3775),
+  AUC = c(0.6573, 0.8384, 0.8003)
+)
+
+optim_metrics %>%
+  kable(
+    caption = "Comparativa dels models amb hiperparàmetres optimitzats",
+    col.names = c("Model", "Exactitud", "Sensibilitat", "Especificitat",
+                  "VPP", "VPN", "Kappa", "AUC"),
+    digits = 4,
+    align = "c"
+  ) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE,
+    font_size = 12
+  ) %>%
+  row_spec(which.max(optim_metrics$AUC), bold = TRUE, background = "#f0f8ff") %>%
+  add_header_above(c(" " = 1, "Métriques de Clasificació" = 6, "Curva ROC" = 1)) %>%
+  footnote(
+    general = "Els models han estat optimitzats mitjançant validació creuada de 3 particions (3-fold CV). k-NN (millor k=21), SVM Lineal (C òptim), SVM Gaussiano (C i γ òptims).",
+    general_title = "Nota:"
+  )
+```
+
+
+
+**Corba ROC**
+
+La corba ROC (Receiver Operating Characteristic) és una representació gràfica que mostra la relació entre la sensibilitat (true positive rate) i la taxa de falsos positius (false positive rate) d’un model de classificació, per diferents llindars de decisió.
+
+Els següents gràfics mostren la corba ROC de cada un dels diferents models de decisió.
+
+**k-NN**
+
+```{r, echo=FALSE}
+ test_pred <- knn(train =xtrain, test = xtest, cl = ytrain, k=9, prob= TRUE)
+ prob <- attr(test_pred, "prob")
+ prob1 <- ifelse(test_pred == "t", prob, 1-prob)
+ pred_knn <- ROCR::prediction(predictions= prob1,
+ labels= as.factor(ytest),
+ label.ordering = c("No","Si"))
+ perf.knn <- performance(pred_knn, "tpr", "fpr")
+ perf.auc <- performance(pred_knn, measure="auc")
+ perf.auc <- unlist(perf.auc@y.values)
+ # colorize=T,
+ plot(perf.knn, avg= "threshold", lwd=3, colorize=F,
+ main=paste("ROC curve, k: ", 21,
+ ", auc=", round(perf.auc,4)))
+ abline(a = 0, b = 1, lwd = 1, lty = 2)
+
+```
+
+\newpage
+**SVM lineal**
+
+```{r, echo=FALSE}
+library(kernlab)
+ pred <- predict(svp1, xtest, type="probabilities")
+ prob1 <- pred[,2]
+ pred_svm <- ROCR::prediction(predictions= prob1,
+                              labels= ytest,
+                              label.ordering = c("No","Si"))
+ perf.lin <- performance(pred_svm, "tpr", "fpr")
+ perf.auc <- performance(pred_svm, measure="auc")
+ perf.auc <- unlist(perf.auc@y.values)
+ plot(perf.lin, avg= "threshold", lwd=3, colorize=F,
+ main=paste("ROC curve", ", auc=", round(perf.auc,4)))
+ abline(a = 0, b = 1, lwd = 1, lty = 2)
+```
+
+\newpage
+**SVM RBF**
+
+```{r, echo=FALSE}
+ pred <- predict(svp_gauss, xtest, type="probabilities")
+ prob1 <- pred[,2]
+ labels_roc <- as.character(ytest_fac)
+ pred_svm <- ROCR::prediction(predictions= prob1,
+                              labels= labels_roc,
+                              label.ordering = c("No","Si"))
+ perf.gau <- performance(pred_svm, "tpr", "fpr")
+ perf.auc <- performance(pred_svm, measure="auc")
+ perf.auc <- unlist(perf.auc@y.values)
+ plot(perf.gau, avg= "threshold", lwd=3, colorize=F,
+ main=paste("ROC gaussià", ", AUC=", round(perf.auc,4)))
+ abline(a = 0, b = 1, lwd = 1, lty = 2)
+
+```
+
+En el següent gràfic es mostren les tres corbes ROC alhora. Gràficament, podem veure el que hem indicat en el comentari de la taula. El SVM lineal és el mètode més òptim. Ja que és el que queda  més a prop del punt (0,1), que representa 100% de positius reals encertats i 0 % de falsos negatius.
+
+\newpage
+**Comparació conjunta corbes ROC**
+
+```{r, echo=FALSE}
+plot(perf.knn, col = "blue", lwd = 2, main = "Corbes ROC Comparades")
+plot(perf.lin, col = "red", lwd = 2, add = TRUE)
+plot(perf.gau, col = "green", lwd = 2, add = TRUE)
+legend("bottomright", legend = c("kNN", "SVM Lineal", "SVM RBF"),
+       col = c("blue", "red", "green"), lwd = 2)
+
+
+```
+
+\newpage
+# Discusió de resultats i conclusions
+
+L’objectiu principal d’aquest estudi consisteix en el desenvolupament d’un mètode de classificació capaç de diagnosticar la presència de diabetis mitjançant variables mèdiques. Per a aquest fi, s’han entrenat i avaluat tres models de classificació supervisada emprant una base de dades amb informació clínica de pacients diabètics i no diabètics. Els algoritmes implementats inclouen: el mètode dels *k*-veïns més propers (*k*-NN), una màquina de vectors de suport (SVM) amb nucli lineal, i una SVM amb nucli radial basat en una funció gaussiana.
+
+Un cop finalitzat el procés d’entrenament i optimització d’hiperparàmetres, els resultats revelen diferències significatives en el rendiment dels models. El millor model *k*-NN, amb *k* = 21, va assolir una exactitud del 74,9%, una sensibilitat del 77% i una especificitat del 68%. Aquestes mètriques indiquen una capacitat notable per a la detecció de pacients diabètics (alta sensibilitat), encara que amb una taxa moderada de falsos positius.
+
+Pel que fa al model SVM amb nucli lineal, va exhibir el rendiment global més elevat, amb una exactitud del 76,5%, una sensibilitat del 86,8% i una especificitat del 57,3%. A més, l’àrea sota la corba ROC (AUC = 0,8384) va corroborar la seva robusta capacitat discriminativa. Aquests resultats suggereixen que, tot i presentar una proporció relativament elevada de falsos positius, el model és altament eficaç per a la identificació correcta de casos positius.
+
+Quant a l’SVM amb nucli gaussià, va obtenir una exactitud lleugerament inferior (73,3%), amb una sensibilitat alta (86,1%) però una especificitat reduïda (49,4%). Aquest comportament es tradueix en una taxa elevada de falsos positius, la qual podria limitar la seva utilitat pràctica en entorns clínics reals.
+
+En considerar el conjunt de mètriques, el model SVM amb nucli lineal destaca per oferir un equilibri òptim entre sensibilitat, exactitud i capacitat discriminativa. En el context mèdic, és prioritari maximitzar la sensibilitat per a minimitzar els falsos negatius, atès que un diagnòstic erroni en pacients diabètics pot tenir conseqüències clíniques severes. Tot i que el model *k*-NN presenta una especificitat lleugerament superior, l’SVM lineal resulta més adequat per a la seva implementació com a eina de suport al diagnòstic clínic de la diabetis.
+
+Perspectives futures: En investigacions posteriors, seria rellevant explorar l’aplicació de tècniques avançades d’aprenentatge automàtic, com ara models d’assemblatge (Random Forest, Gradient Boosting) o xarxes neuronals, amb la finalitat de millorar el rendiment predictiu. Addicionalment, seria valuós analitzar les característiques dels errors de classificació per a identificar possibles patrons en els falsos positius i negatius. Una altra línia d’interès consistiria en l’ampliació de la base de dades amb mostres més extenses i diversificades, fet que podria millorar la generalització dels models. Finalment, la incorporació de variables clíniques o socioeconòmiques addicionals, juntament amb la validació dels models en entorns clínics reals, constituirien passos essencials per a avaluar-ne l’efectivitat en condicions pràctiques.
+
+\newpage
+# Bibliografia
